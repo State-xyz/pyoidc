@@ -1,5 +1,4 @@
 FROM ubuntu:18.04
-MAINTAINER hans.zandbelt@oidf.org
 
 ENV DEBIAN_FRONTEND noninteractive
 RUN apt-get update && apt-get install -y git ntp curl gnupg
