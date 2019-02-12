@@ -1,21 +1,21 @@
 FROM ubuntu:18.04
 
 ENV DEBIAN_FRONTEND noninteractive
-RUN apt-get update && apt-get install -y git ntp curl gnupg
+RUN apt-get update && apt-get install -y --no-install-recommends git ntp curl gnupg ca-certificates
 RUN curl -sL https://deb.nodesource.com/setup_8.x | bash -
-RUN apt-get update && apt-get install -y nodejs apache2
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs apache2 && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ENV SRCDIR /usr/local/src
 ENV INSTDIR node-oidc-provider
 ENV SUBDIR ${SRCDIR}/${INSTDIR}
 
-WORKDIR ${SRCDIR}
 
 ENV VERSION_NODE_OP   tags/v4.0.3
 
-RUN git clone https://github.com/panva/node-oidc-provider.git
-RUN cd node-oidc-provider && git checkout ${VERSION_NODE_OP} && cd -
-RUN cd ${INSTDIR} && npm install && cd -
+RUN git clone https://github.com/panva/node-oidc-provider.git ${INSTDIR}
+WORKDIR ${INSTDIR}
+RUN git checkout ${VERSION_NODE_OP}
+RUN npm install
 
 COPY docker/op/apache-ssl.conf /etc/apache2/sites-available/ssl.conf
 COPY docker/op/cert.pem /etc/apache2/
