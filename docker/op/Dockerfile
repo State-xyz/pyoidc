@@ -12,9 +12,13 @@ ENV SUBDIR ${SRCDIR}/${INSTDIR}
 
 ENV VERSION_NODE_OP   tags/v4.0.3
 
-RUN git clone https://github.com/panva/node-oidc-provider.git ${INSTDIR}
-WORKDIR ${INSTDIR}
+WORKDIR ${SRCDIR}
+RUN git clone https://github.com/panva/node-oidc-provider.git
+WORKDIR ${SRCDIR}/node-oidc-provider
 RUN git checkout ${VERSION_NODE_OP}
+RUN pwd
+WORKDIR ${INSTDIR}
+RUN pwd
 RUN npm install
 
 COPY docker/op/apache-ssl.conf /etc/apache2/sites-available/ssl.conf
