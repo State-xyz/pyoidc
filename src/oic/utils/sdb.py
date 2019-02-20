@@ -1,7 +1,6 @@
 import base64
 import copy
 import hashlib
-import itertools
 import json
 import logging
 import time
@@ -327,8 +326,10 @@ class RefreshDB(object):
         """
         refresh_token = 'Refresh_{}'.format(rndstr(5 * 16))
         self.store(refresh_token,
-                   {'client_id': client_id, 'uid': uid, 'scope': scopes,
-                    'sub': sub, 'authzreq': authzreq, 'sid': sid})
+                   {
+                       'client_id': client_id, 'uid': uid, 'scope': scopes,
+                       'sub': sub, 'authzreq': authzreq, 'sid': sid
+                   })
         return refresh_token
 
     def verify_token(self, client_id, refresh_token):
@@ -418,13 +419,19 @@ class SessionDB(object):
     def __init__(self, base_url, db, refresh_db=None,
                  refresh_token_expires_in=86400,
                  token_factory=None, code_factory=None,
-                 refresh_token_factory=None):
+                 refresh_token_factory=None, sm_salt=''):
 
         self.base_url = base_url
         self._db = db
 
-        # TODO: uid2sid should have a persistence option too.
-        self.uid2sid = {}
+        # TODO: mapping different identifiers to each other should have
+        # a persistent option too.
+        self._map = {
+            'uid2sub': {},
+            'sub2uid': {},
+            'sub2sid': {},
+            'smid2sid': {}
+        }
 
         self.token_factory = {
             'code': code_factory,
@@ -450,6 +457,7 @@ class SessionDB(object):
 
         self.access_token = self.token_factory['access_token']
         self.token = self.access_token
+        self.sm_salt = sm_salt or rndstr(32)
 
     def _get_token_key(self, item, order=None):
         if order is None:
@@ -512,9 +520,18 @@ class SessionDB(object):
         Actually delete the pointed session from this SessionDB instance
         :param sid: session identifier
         """
+        sub = self._db[sid]['sub']
         del self._db[sid]
-        # Delete the mapping for session id
-        self.uid2sid = {k: v for k, v in self.uid2sid.items() if sid not in v}
+
+        # Remove the mapping for session id
+        self._map['sub2sid'][sub].remove(sid)
+        if not self._map['sub2sid'][sub]:
+            del self._map['sub2sid'][sub]
+            uid = self._map['sub2uid'][sub]
+            del self._map['sub2uid'][sub]
+            self._map['uid2sub'][uid].remove(sub)
+            if not self._map['uid2sub'][uid]:
+                del self._map['uid2sub'][uid]
 
     def update(self, key, attribute, value):
         if key in self._db:
@@ -558,13 +575,23 @@ class SessionDB(object):
 
         # since sub can be public, there can be more then one session
         # that uses the same subject identifier
-        try:
-            self.uid2sid[uid] += [sid]
-        except KeyError:
-            self.uid2sid[uid] = [sid]
+        # Each uid can map to several subs
+        # each sub can map to one or more sids
+        if uid in self._map['uid2sub']:
+            if sub not in self._map['uid2sub'][uid]:
+                self._map['uid2sub'][uid] += [sub]
+        else:
+            self._map['uid2sub'][uid] = [sub]
 
-        logger.debug("uid2sid: %s" % self.uid2sid)
+        self._map['sub2uid'][sub] = uid
+
+        logger.debug("uid2sub: %s" % self._map['uid2sub'])
+
         self.update(sid, 'sub', sub)
+        try:
+            self._map['sub2sid'][sub] += [sid]
+        except KeyError:
+            self._map['sub2sid'][sub] = [sid]
 
         return sub
 
@@ -841,27 +868,45 @@ class SessionDB(object):
 
     def get_client_ids_for_uid(self, uid):
         return [self.get_client_id_for_session(sid) for sid in
-                self.uid2sid[uid]]
+                self.get_sids_from_uid(uid)]
 
     def get_verified_Logout(self, uid):
-        _dict = self._db[self.uid2sid[uid]]
-        if "verified_logout" not in _dict:
-            return None
-        return _dict["verified_logout"]
+        res = {}
+        for sid in self.get_sids_from_uid(uid):
+            _dict = self._db[sid]
+            try:
+                res[sid] = _dict["verified_logout"]
+            except KeyError:
+                res[sid] = None
+        return res
 
     def set_verify_logout(self, uid):
-        _dict = self._db[self.uid2sid[uid]]
-        _dict["verified_logout"] = uuid.uuid4().urn
+        for sid in self.get_sids_from_uid(uid):
+            _dict = self._db[sid]
+            _dict["verified_logout"] = uuid.uuid4().urn
 
-    def get_token_id(self, uid):
-        _dict = self._db[self.uid2sid[uid]]
-        return _dict["id_token"]
+    def get_id_token(self, uid):
+        res = {}
+        for sid in self.get_sids_from_uid(uid):
+            _dict = self._db[sid]
+            try:
+                res[_dict['client_id']] = _dict['id_token']
+            except KeyError:
+                pass
+        return res
 
     def is_revoke_uid(self, uid):
-        return self._db[self.uid2sid[uid]]["revoked"]
+        res = {}
+        for sid in self.get_sids_from_uid(uid):
+            try:
+                res[sid] = self._db[sid]["revoked"]
+            except KeyError:
+                res[sid] = None
+        return res
 
     def revoke_uid(self, uid):
-        self.update(self.uid2sid[uid], 'revoked', True)
+        for sid in self.get_sids_from_uid(uid):
+            self.update(sid, 'revoked', True)
 
     def get_sids_from_uid(self, uid):
         """
@@ -871,11 +916,25 @@ class SessionDB(object):
         :param uid: local identifier (username)
         :return: list of session identifiers
         """
-        return self.uid2sid[uid]
+        res = set()
+        for sub in self._map['uid2sub'][uid]:
+            res |= set(self._map['sub2sid'][sub])
+        return res
 
     def get_sids_by_sub(self, sub):
-        sids = itertools.chain.from_iterable(self.uid2sid.values())
-        return [sid for sid in sids if self._db[sid]["sub"] == sub]
+        try:
+            return self._map['sub2sid'][sub]
+        except KeyError:
+            return None
+
+    def get_uid_by_sub(self, sub):
+        try:
+            return self._map['sub2uid'][sub]
+        except KeyError:
+            return None
+
+    def has_uid(self, uid):
+        return uid in self._map['uid2sub']
 
     def duplicate(self, sinfo):
         _dic = copy.copy(sinfo)
@@ -895,7 +954,11 @@ class SessionDB(object):
                 pass
 
         self._db[sid] = _dic
-        self.uid2sid[_dic["sub"]] = sid
+        try:
+            self._map['sub2sid'][_dic["sub"]] += [sid]
+        except KeyError:
+            self._map['sub2sid'][_dic["sub"]] = [sid]
+
         return sid
 
     def read(self, token):
@@ -905,3 +968,37 @@ class SessionDB(object):
             raise WrongTokenType("Not a grant token")
 
         return self._db[key]
+
+    def make_smid(self, sid):
+        """
+        Create a session management ID
+
+        :param sid:
+        :return: A session management ID
+        """
+
+        return hashlib.sha256(
+            "{}{}".format(sid, self.sm_salt).encode("utf-8")).hexdigest()
+
+    def get_sid_by_smid(self, smid):
+        """
+        Given a session management ID return the session ID
+
+        :param smid: Session management ID
+        :return: Session ID
+        """
+        return self._map['smid2sid'][smid]
+
+    def get_sid_by_sub_and_client_id(self, sub, client_id):
+        """
+        Given a subject identifier and a client ID return the Id of a session
+        that has those values.
+
+        :param sub: Subjecty Identifier
+        :param client_id: Client identifier
+        :return: Session identifier
+        """
+        for sid in self._map['sub2sids'][sub]:
+            if self._db[sid]['client_id'] == client_id:
+                return sid
+        return None
