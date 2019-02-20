@@ -33,6 +33,7 @@ from oic.oauth2.message import NotAllowedValue
 from oic.oauth2.message import ParamDefinition
 from oic.oauth2.message import SchemeError
 from oic.utils import time_util
+from oic.utils.time_util import utc_time_sans_frac
 
 __author__ = 'rohe0002'
 
@@ -331,8 +332,10 @@ class AccessTokenResponse(message.AccessTokenResponse):
     def verify(self, **kwargs):
         super(AccessTokenResponse, self).verify(**kwargs)
         if "id_token" in self:
+            _raw_id_token = self['id_token']
             # replace the JWT with the verified IdToken instance
             self["id_token"] = verify_id_token(self, **kwargs)
+            self['_raw_id_token'] = _raw_id_token
 
         return True
 
@@ -364,7 +367,9 @@ class AuthorizationResponse(message.AuthorizationResponse,
                     return False
 
         if "id_token" in self:
+            _raw_id_token = self['id_token']
             self["id_token"] = verify_id_token(self, check_hash=True, **kwargs)
+            self['_raw_id_token'] = _raw_id_token
 
         if "access_token" in self:
             if "token_type" not in self:
@@ -576,6 +581,10 @@ class RegistrationRequest(Message):
         "initiate_login_uri": SINGLE_OPTIONAL_STRING,
         "request_uris": OPTIONAL_LIST_OF_STRINGS,
         "post_logout_redirect_uris": OPTIONAL_LIST_OF_STRINGS,
+        "frontchannel_logout_uri": SINGLE_OPTIONAL_STRING,
+        "frontchannel_logout_session_required": OPTIONAL_LOGICAL,
+        "backchannel_logout_uri": SINGLE_OPTIONAL_STRING,
+        "backchannel_logout_session_required": OPTIONAL_LOGICAL
     }
     c_default = {"application_type": "web", "response_types": ["code"]}
     c_allowed_values = {"application_type": ["native", "web"],
@@ -731,14 +740,35 @@ class RefreshSessionRequest(Message):
                "redirect_url": SINGLE_REQUIRED_STRING,
                "state": SINGLE_REQUIRED_STRING}
 
+    def verify(self, **kwargs):
+        super(RefreshSessionRequest, self).verify(**kwargs)
+        if "id_token" in self:
+            _raw_id_token = self['id_token']
+            self["id_token"] = verify_id_token(self, check_hash=True, **kwargs)
+            self['_raw_id_token'] = _raw_id_token
+
 
 class RefreshSessionResponse(Message):
     c_param = {"id_token": SINGLE_REQUIRED_STRING,
                "state": SINGLE_REQUIRED_STRING}
 
+    def verify(self, **kwargs):
+        super(RefreshSessionResponse, self).verify(**kwargs)
+        if "id_token" in self:
+            _raw_id_token = self['id_token']
+            self["id_token"] = verify_id_token(self, check_hash=True, **kwargs)
+            self['_raw_id_token'] = _raw_id_token
+
 
 class CheckSessionRequest(Message):
     c_param = {"id_token": SINGLE_REQUIRED_STRING}
+
+    def verify(self, **kwargs):
+        super(CheckSessionRequest, self).verify(**kwargs)
+        if "id_token" in self:
+            _raw_id_token = self['id_token']
+            self["id_token"] = verify_id_token(self, check_hash=True, **kwargs)
+            self['_raw_id_token'] = _raw_id_token
 
 
 class CheckIDRequest(Message):
@@ -913,6 +943,119 @@ SCOPE2CLAIMS = {
     "phone": ["phone_number", "phone_number_verified"],
     "offline_access": []
 }
+
+SINGLE_OPTIONAL_JSON = ParamDefinition(dict, False, json_ser, json_deser, False)
+SINGLE_REQUIRED_JSON = ParamDefinition(dict, True, json_ser, json_deser, False)
+
+
+class LogoutToken(Message):
+    """
+    Defined in
+    https://openid.net/specs/openid-connect-backchannel-1_0.html#LogoutToken
+    """
+    c_param = {
+        "iss": SINGLE_REQUIRED_STRING,
+        "sub": SINGLE_OPTIONAL_STRING,
+        "aud": REQUIRED_LIST_OF_STRINGS,  # Array of strings or string
+        "iat": SINGLE_REQUIRED_INT,
+        "jti": SINGLE_REQUIRED_STRING,
+        'events': SINGLE_REQUIRED_JSON,
+        'sid': SINGLE_OPTIONAL_STRING
+    }
+
+    def verify(self, **kwargs):
+        super(LogoutToken, self).verify(**kwargs)
+
+        if 'nonce' in self:
+            raise MessageException('"nonce" is prohibited from appearing in '
+                                   'a LogoutToken.')
+
+        # Check the 'events' JSON
+        _keys = list(self['events'].keys())
+        if len(_keys) != 1:
+            raise ValueError('Must only be one member in "events"')
+        if _keys[0] != "http://schemas.openid.net/event/backchannel-logout":
+            raise ValueError('Wrong member in "events"')
+        if self['events'][_keys[0]] != {}:
+            raise ValueError('Wrong member value in "events"')
+
+        # There must be either a 'sub' or a 'sid', and may contain both
+        if not('sub' in self or 'sid' in self):
+            raise ValueError('There MUST be either a "sub" or a "sid"')
+
+        try:
+            if kwargs['aud'] not in self['aud']:
+                raise NotForMe('Not among intended audience')
+        except KeyError:
+            pass
+
+        try:
+            if kwargs['iss'] != self['iss']:
+                raise NotForMe('Wrong issuer')
+        except KeyError:
+            pass
+
+        _now = utc_time_sans_frac()
+
+        try:
+            _skew = kwargs['skew']
+        except KeyError:
+            _skew = 0
+
+        try:
+            _exp = self['iat']
+        except KeyError:
+            pass
+        else:
+            if self['iat'] > (_now + _skew):
+                raise ValueError('Invalid issued_at time')
+
+        return True
+
+
+BACK_CHANNEL_LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout"
+
+
+ID_TOKEN_VERIFY_ARGS = ['keyjar', 'verify', 'encalg', 'encenc', 'sigalg',
+                        'issuer', 'allow_missing_kid', 'no_kid_issuer',
+                        'trusting', 'skew', 'nonce_storage_time', 'client_id']
+
+
+class BackChannelLogoutRequest(Message):
+    """
+    Defined in
+    https://openid.net/specs/openid-connect-backchannel-1_0.html#LogoutToken
+    """
+
+    c_param = {
+        "logout_token": SINGLE_REQUIRED_STRING
+        }
+
+    def verify(self, **kwargs):
+        super(BackChannelLogoutRequest, self).verify(**kwargs)
+
+        args = {}
+        for arg in ID_TOKEN_VERIFY_ARGS:
+            try:
+                args[arg] = kwargs[arg]
+            except KeyError:
+                pass
+        idt = LogoutToken().from_jwt(str(self["logout_token"]), **args)
+        if not idt.verify(**kwargs):
+            return False
+
+        self["logout_token"] = idt
+        logger.info('Verified Logout Token: {}'.format(idt.to_dict()))
+
+        return True
+
+
+class FrontChannelLogoutRequest(Message):
+    c_param = {
+        "iss": SINGLE_OPTIONAL_STRING,
+        "sid": SINGLE_OPTIONAL_STRING
+    }
+
 
 MSG = {
     "RefreshAccessTokenRequest": RefreshAccessTokenRequest,
