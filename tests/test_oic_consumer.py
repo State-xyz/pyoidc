@@ -381,7 +381,7 @@ class TestOICConsumer():
 
         assert auth is None
         assert isinstance(atr, AccessTokenResponse)
-        assert _eq(atr.keys(), ['access_token', 'id_token',
+        assert _eq(atr.keys(), ['access_token', 'id_token', '_raw_id_token',
                                 'token_type', 'state', 'scope'])
 
         self.consumer.verify_id_token(atr["id_token"],
