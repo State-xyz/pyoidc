@@ -2,8 +2,12 @@
 import logging
 import os.path
 
+from jwkest import as_unicode
+
 from oic import rndstr
 from oic.exception import AuthzError
+from oic.exception import MessageException
+from oic.exception import NotForMe
 from oic.exception import PyoidcError
 from oic.oauth2 import Grant
 from oic.oauth2.consumer import TokenError
@@ -13,6 +17,7 @@ from oic.oauth2.message import ErrorResponse
 from oic.oic import ENDPOINTS
 from oic.oic import Client
 from oic.oic.message import AccessTokenResponse
+from oic.oic.message import BackChannelLogoutRequest
 from oic.oic.message import AuthorizationRequest
 from oic.oic.message import AuthorizationResponse
 from oic.oic.message import Claims
@@ -354,6 +359,11 @@ class Consumer(Client):
                 idt = aresp["id_token"]
             except KeyError:
                 idt = None
+            else:
+                try:
+                    self.sdb[_state].store_smid2state(idt['sid'], _state)
+                except KeyError:
+                    pass
 
             return aresp, atr, idt
         elif "token" in self.consumer_config["response_type"]:  # implicit flow
@@ -373,6 +383,12 @@ class Consumer(Client):
                 idt = aresp["id_token"]
             except KeyError:
                 idt = None
+            else:
+                try:
+                    self.sdb[_state].store_smid2state(idt['sid'], _state)
+                except KeyError:
+                    pass
+
             return None, None, idt
 
     def complete(self, state):
@@ -443,3 +459,44 @@ class Consumer(Client):
 
     def end_session(self):
         pass
+
+    def backchannel_logout(self, request=None, request_args=None):
+        """
+        Receives a back channel logout request and returns a Session ID
+        if the request was OK.
+
+        :param request: A urlencoded request
+        :param request_args: The request as a dictionary
+        :return: A Session Identifier
+        """
+        if request:
+            req = BackChannelLogoutRequest().from_urlencoded(as_unicode(request))
+        else:
+            req = BackChannelLogoutRequest(**request_args)
+
+        kwargs = {
+            'aud': self.client_id,
+            'iss': self.issuer,
+            'keyjar': self.keyjar
+        }
+
+        try:
+            req.verify(**kwargs)
+        except (MessageException, ValueError, NotForMe) as err:
+            raise MessageException('Bogus logout request: {}'.format(err))
+
+        # Find the subject through 'sid' or 'sub'
+
+        try:
+            sub = req['logout_token']['sub']
+        except KeyError:
+            try:
+                sm_id = req['logout_token']['sid']
+            except KeyError:
+                raise MessageException('Neither "sid" nor "sub"')
+            else:
+                _state = self.sdb.get_sid_by_smid(sm_id)
+        else:
+            _state = self.sdb.get_sid_by_sub_and_client_id(sub, self.client_id)
+
+        return _state

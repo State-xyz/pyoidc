@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 class PBase(object):
-    def __init__(self, verify_ssl=True, keyjar=None, client_cert=None, timeout=5):
+    def __init__(self, verify_ssl=True, keyjar=None, client_cert=None,
+                 timeout=5):
         """
         A base class for OAuth2 clients and servers
 
