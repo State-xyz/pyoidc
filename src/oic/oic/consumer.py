@@ -460,6 +460,8 @@ class Consumer(Client):
     def end_session(self):
         pass
 
+# LOGOUT related
+
     def backchannel_logout(self, request=None, request_args=None):
         """
         Receives a back channel logout request and returns a Session ID
@@ -495,8 +497,8 @@ class Consumer(Client):
             except KeyError:
                 raise MessageException('Neither "sid" nor "sub"')
             else:
-                _state = self.sdb.get_sid_by_smid(sm_id)
+                _sid = self.sdb.get_sid_by_smid(sm_id)
         else:
-            _state = self.sdb.get_sid_by_sub_and_client_id(sub, self.client_id)
+            _sid = self.sdb.get_sid_by_sub_and_client_id(sub, self.client_id)
 
-        return _state
+        return _sid

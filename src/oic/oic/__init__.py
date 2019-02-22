@@ -360,7 +360,6 @@ class Client(oauth2.Client):
         self.wf = WebFinger(OIC_ISSUER)
         self.wf.httpd = self
         self.allow = {}
-        self.post_logout_redirect_uris = []
         self.registration_expires = 0
         self.registration_access_token = None
         self.id_token_max_age = 0
@@ -369,6 +368,9 @@ class Client(oauth2.Client):
         # For instance {'sig': {"RSA":"abc"}}
         self.kid = {"sig": {}, "enc": {}}
         self.requests_dir = requests_dir
+
+        # LOGOUT related
+        self.post_logout_redirect_uris = []
 
     def _get_id_token(self, **kwargs):
         try:
@@ -643,7 +645,7 @@ class Client(oauth2.Client):
                                  state="", body_type="", method="GET",
                                  request_args=None, extra_args=None,
                                  http_args=None,
-                                 response_cls=AuthorizationResponse):
+                                 response_cls=AuthorizationResponse, **kwargs):
 
         algs = self.sign_enc_algs("id_token")
 

@@ -944,6 +944,8 @@ SCOPE2CLAIMS = {
     "offline_access": []
 }
 
+# LOGOUT related messages
+
 SINGLE_OPTIONAL_JSON = ParamDefinition(dict, False, json_ser, json_deser, False)
 SINGLE_REQUIRED_JSON = ParamDefinition(dict, True, json_ser, json_deser, False)
 
@@ -1086,6 +1088,10 @@ MSG = {
     "DiscoveryRequest": DiscoveryRequest,
     "DiscoveryResponse": DiscoveryResponse,
     "ResourceRequest": ResourceRequest,
+    # LOGOUT messages
+    "LogoutToken": LogoutToken,
+    "BackChannelLogoutRequest": BackChannelLogoutRequest,
+    "FrontChannelLogoutRequest": FrontChannelLogoutRequest
 }
 
 

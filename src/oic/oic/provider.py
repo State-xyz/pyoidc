@@ -161,30 +161,6 @@ def construct_uri(item):
         return base_url
 
 
-def do_front_channel_logout_iframe(c_info, iss, sid):
-    """
-
-    :param c_info: Client info
-    :param iss: Issuer ID
-    :param sid: Session ID
-    :return: IFrame
-    """
-    frontchannel_logout_uri = c_info['frontchannel_logout_uri']
-    try:
-        flsr = c_info['frontchannel_logout_session_required']
-    except KeyError:
-        flsr = False
-
-    if flsr:
-        _query = urlencode({'iss': iss, 'sid': sid})
-        _iframe = '<iframe src="{}?{}">'.format(frontchannel_logout_uri,
-                                                _query)
-    else:
-        _iframe = '<iframe src="{}">'.format(frontchannel_logout_uri)
-
-    return _iframe
-
-
 class AuthorizationEndpoint(Endpoint):
     etype = "authorization"
     url = 'authorization'
@@ -515,302 +491,11 @@ class Provider(AProvider):
         # return the best I have
         return None, None
 
-    def verify_post_logout_redirect_uri(self, esreq, client_id):
-        """
-
-        :param esreq: End session request
-        :param client_id: The Client ID
-        :return:
-        """
-        try:
-            redirect_uri = esreq["post_logout_redirect_uri"]
-        except KeyError:
-            logger.debug("Missing post_logout_redirect_uri parameter")
-            return
-
-        try:
-            accepted_urls = self.cdb[client_id]["post_logout_redirect_uris"]
-            if self._verify_url(redirect_uri, accepted_urls):
-                return redirect_uri
-        except Exception as exc:
-            msg = "An error occurred while verifying redirect URI: %s"
-            logger.debug(msg, str(exc))
-
-        return None
-
     def is_session_revoked(self, request="", cookie=None):
         areq = parse_qs(request)
         authn, _ = self.pick_auth(areq)
         identity, _ts = authn.authenticated_as(cookie)
         return self.sdb.is_revoke_uid(identity["uid"])
-
-    def let_user_verify_logout(self, uid, esr, cookie, redirect_uri):
-        if cookie:
-            headers = [cookie]
-        else:
-            headers = []
-
-        self.sdb.set_verified_logout(uid)
-
-        if redirect_uri is not None:
-            redirect = redirect_uri
-        else:
-            redirect = "/"
-        try:
-            tmp_id_token_hint = esr["id_token_hint"]
-        except KeyError:
-            tmp_id_token_hint = ""
-
-        context = {
-            "id_token_hint": tmp_id_token_hint,
-            "post_logout_redirect_uri": esr["post_logout_redirect_uri"],
-            "key": self.sdb.get_verify_logout(uid),
-            "redirect": redirect,
-            "action": "/" + EndSessionEndpoint("").etype
-        }
-        return Response(self.template_renderer('verify_logout', context), headers=headers)
-
-    def _get_uid_from_cookie(self, cookie):
-        """Get cookie_dealer, client_id and uid from cookie."""
-        if cookie is None:
-            return None, None, None
-
-        cookie_dealer = CookieDealer(srv=self)
-        client_id = uid = None
-
-        _cval = cookie_dealer.get_cookie_value(cookie, self.sso_cookie_name)
-        if _cval:
-            (value, _ts, typ) = _cval
-            if typ == 'sso':
-                uid, client_id = value.split(DELIM)
-
-        return cookie_dealer, client_id, uid
-
-    def do_back_channel_logout(self, cinfo, sub, sid):
-        """
-
-        :param cinfo: Client information
-        :param sub: Subject identifier
-        :param sid: The Issuer ID
-        :return: Tuple with logout URI and signed logout token
-        """
-
-        back_channel_logout_uri = cinfo['backchannel_logout_uri']
-
-        # always include sub and sid so I don't check for
-        # backchannel_logout_session_required
-
-        payload = {
-            'sub': sub, 'sid': sid,
-            'events': {BACK_CHANNEL_LOGOUT_EVENT: {}}
-        }
-
-        try:
-            alg = cinfo['id_token_signed_response_alg']
-        except KeyError:
-            alg = self.capabilities['id_token_signing_alg_values_supported'][0]
-
-        _jws = JWT(self.keyjar, iss=self.name, lifetime=86400, sign_alg=alg)
-        _jws.with_jti = True
-        sjwt = _jws.pack(payload=payload, recv=cinfo["client_id"])
-
-        return back_channel_logout_uri, sjwt
-
-    def logout_all_clients(self, sid, client_id):
-        _sdb = self.sdb
-
-        # Find all RPs this user has logged it from
-        uid = _sdb.get_uid_by_sid(sid)
-        _client_sid = {}
-        for usid in _sdb.get_sids_from_uid(uid):
-            _client_sid[_sdb[usid]['client_id']] = usid
-
-        # Front-/Backchannel logout ?
-        _cdb = self.cdb
-        _iss = self.name
-        bc_logouts = {}
-        fc_iframes = []
-        for _cid, _csid in _client_sid.items():
-            if 'backchannel_logout_uri' in _cdb[_cid]:
-                _sub = _sdb.get_sub_by_sid(_csid)
-                bc_logouts[_cid] = self.do_back_channel_logout(
-                    _cdb[_cid], _sub, _csid)
-            elif 'frontchannel_logout_uri' in _cdb[_cid]:
-                # Construct an IFrame
-                fc_iframes.append(do_front_channel_logout_iframe(_cdb[_cid],
-                                                                 _iss, _csid))
-
-        # take care of Back channel logout first
-        for _cid, spec in bc_logouts.items():
-            _url, sjwt = spec
-            logger.info('logging out from {} at {}'.format(_cid, _url))
-
-            res = self.httpc.http_request(
-                _url, 'POST', data="logout_token={}".format(sjwt))
-
-            if res.status_code < 300:
-                logger.info('Logged out from {}'.format(_cid))
-            elif res.status_code >= 400:
-                logger.info('failed to logout from {}'.format(_cid))
-
-        return fc_iframes
-
-    def logout_from_client(self, sid, client_id):
-        _cdb = self.cdb
-        _sso_db = self.sdb
-
-        if 'backchannel_logout_uri' in _cdb[client_id]:
-            _sub = _sso_db.get_sub_by_sid(sid)
-            _url, sjwt = self.do_back_channel_logout(_cdb[client_id], _sub, sid)
-            res = self.httpc.http_request(
-                _url, 'POST', data="logout_token={}".format(sjwt))
-
-            if res.status_code < 300:
-                logger.info('Logged out from {}'.format(client_id))
-            elif res.status_code >= 400:
-                logger.info('failed to logout from {}'.format(client_id))
-
-            return []
-        elif 'frontchannel_logout_uri' in _cdb[client_id]:
-            # Construct an IFrame
-            _iframe = do_front_channel_logout_iframe(
-                _cdb[client_id], self.name, sid)
-            return [_iframe]
-
-    def end_session_endpoint(self, request="", cookie=None, **kwargs):
-        """
-        This is where a RP initiated Logout starts
-
-        :param request: The logout request
-        :param cookie:
-        :param kwargs:
-        :return:
-        """
-        esr = EndSessionRequest().from_urlencoded(request)
-
-        logger.debug("End session request: {}", sanitize(esr.to_dict()))
-
-        # 2 ways of find out client ID and user. Either through a cookie
-        # or using the id_token_hint
-        try:
-            cookie_dealer, client_id, uid = self._get_uid_from_cookie(cookie)
-        except SubMismatch as error:
-            return error_response('invalid_request', '%s' % error)
-
-        if "id_token_hint" in esr:
-            id_token_hint = IdToken().from_jwt(esr["id_token_hint"],
-                                               keyjar=self.keyjar,
-                                               verify=True)
-            far_away = 86400*30  # 30 days
-
-            if client_id:
-                args = {'client_id': client_id}
-            else:
-                args = {}
-
-            try:
-                id_token_hint.verify(iss=self.baseurl, skew=far_away,
-                                     nonce_storage_time=far_away, **args)
-            except (VerificationError, NotForMe) as err:
-                logger.warning(
-                    'Verification error on id_token_hint: {}'.format(err))
-                return error_response('invalid_request', "Bad Id Token hint")
-
-            sub = id_token_hint["sub"]
-
-            if uid:
-                match = False
-                # verify that 'sub' are bound to 'uid'
-                if self.sdb.get_uid_by_sub(sub) != uid:
-                    return error_response('invalid_request', "Wrong user")
-            else:
-                try:
-                    uid = self.sdb.get_uid_by_sub(sub)
-                except IndexError:
-                    pass
-
-            if not client_id:
-                if len(id_token_hint['aud']) == 1:
-                    client_id = id_token_hint['aud'][0]
-                else:
-                    client_id = id_token_hint['azp']
-
-        if not client_id:
-            return error_response('invalid_request', "Could not find client ID")
-        if client_id not in self.cdb:
-            return error_response('invalid_request', "Unknown client")
-
-        redirect_uri = None
-        if "post_logout_redirect_uri" in esr:
-            redirect_uri = self.verify_post_logout_redirect_uri(esr, client_id)
-            if not redirect_uri:
-                msg = "Post logout redirect URI verification failed!"
-                return error_response('invalid_request', msg)
-        else:  # If only one registered use that one
-            if len(self.cdb[client_id]["post_logout_redirect_uris"]) == 1:
-                _base, _query = self.cdb[client_id]["post_logout_redirect_uris"][0]
-                if _query:
-                    query_string = urlencode(
-                        [(key, v) for key in _query for v in _query[key]])
-                    redirect_uri = "%s?%s" % (_base, query_string)
-                else:
-                    redirect_uri = _base
-
-        # redirect user to OP logout verification page
-        payload = {'uid': uid, 'client_id': client_id,
-                   'redirect_uri': redirect_uri}
-
-        # From me to me
-        _jws = JWT(self.keyjar, iss=self.name, lifetime=86400,
-                   sign_alg=kwargs['signing_alg'])
-        sjwt = _jws.pack(payload=payload, recv=self.name)
-
-        return {'sjwt': sjwt}
-
-    def kill_session(self, sid, request, fc_iframes):
-        # Kill the session
-        _sdb = self.sdb
-        _sdb.revoke_session(sid=sid)
-
-        # redirect user
-        if 'post_logout_redirect_uri' in request:
-            _ruri = request["post_logout_redirect_uri"]
-            if 'state' in request:
-                _ruri = '{}?{}'.format(
-                    _ruri, urlencode({'state': request['state']}))
-        else:  # To  my own logout-done page
-            try:
-                _ruri = self.post_logout_page
-            except KeyError:
-                _ruri = self.name
-
-        return {
-            'logout_iframes': fc_iframes,
-            'response_args': _ruri
-        }
-
-        # # Delete cookies
-        # authn, _ = self.pick_auth(esr)
-        # headers = [authn.delete_cookie(), self.delete_session_cookie()]
-        # if cookie_dealer:
-        #     headers.append(cookie_dealer.delete_cookie(self.sso_cookie_name))
-        #
-        # if redirect_uri is not None:
-        #     try:
-        #         _state = esr['state']
-        #     except KeyError:
-        #         redirect_uri = str(redirect_uri)
-        #     else:
-        #         if '?' in redirect_uri:
-        #             redirect_uri += "&"
-        #         else:
-        #             redirect_uri += "?"
-        #
-        #         redirect_uri += urlencode({'state': _state})
-        #
-        #     return SeeOther(redirect_uri, headers=headers)
-        #
-        # return Response("Successful logout", headers=headers)
 
     def verify_endpoint(self, request="", cookie=None, **kwargs):
         """
@@ -2225,3 +1910,299 @@ class Provider(AProvider):
                         kb.remove(key)
             if len(kb) == 0:
                 self.keyjar.issuer_keys[""].remove(kb)
+
+    # LOGOUT related
+
+    def verify_post_logout_redirect_uri(self, esreq, client_id):
+        """
+
+        :param esreq: End session request
+        :param client_id: The Client ID
+        :return:
+        """
+        try:
+            redirect_uri = esreq["post_logout_redirect_uri"]
+        except KeyError:
+            logger.debug("Missing post_logout_redirect_uri parameter")
+            return
+
+        try:
+            accepted_urls = self.cdb[client_id]["post_logout_redirect_uris"]
+            if self._verify_url(redirect_uri, accepted_urls):
+                return redirect_uri
+        except Exception as exc:
+            msg = "An error occurred while verifying redirect URI: %s"
+            logger.debug(msg, str(exc))
+
+        return None
+
+    def let_user_verify_logout(self, uid, esr, cookie, redirect_uri):
+        if cookie:
+            headers = [cookie]
+        else:
+            headers = []
+
+        self.sdb.set_verified_logout(uid)
+
+        if redirect_uri is not None:
+            redirect = redirect_uri
+        else:
+            redirect = "/"
+        try:
+            tmp_id_token_hint = esr["id_token_hint"]
+        except KeyError:
+            tmp_id_token_hint = ""
+
+        context = {
+            "id_token_hint": tmp_id_token_hint,
+            "post_logout_redirect_uri": esr["post_logout_redirect_uri"],
+            "key": self.sdb.get_verify_logout(uid),
+            "redirect": redirect,
+            "action": "/" + EndSessionEndpoint("").etype
+        }
+        return Response(self.template_renderer('verify_logout', context), headers=headers)
+
+    def _get_uid_from_cookie(self, cookie):
+        """Get cookie_dealer, client_id and uid from cookie."""
+        if cookie is None:
+            return None, None, None
+
+        cookie_dealer = CookieDealer(srv=self)
+        client_id = uid = None
+
+        _cval = cookie_dealer.get_cookie_value(cookie, self.sso_cookie_name)
+        if _cval:
+            (value, _ts, typ) = _cval
+            if typ == 'sso':
+                uid, client_id = value.split(DELIM)
+
+        return cookie_dealer, client_id, uid
+
+    def do_back_channel_logout(self, cinfo, sub, sid):
+        """
+
+        :param cinfo: Client information
+        :param sub: Subject identifier
+        :param sid: The Issuer ID
+        :return: Tuple with logout URI and signed logout token
+        """
+
+        back_channel_logout_uri = cinfo['backchannel_logout_uri']
+
+        # always include sub and sid so I don't check for
+        # backchannel_logout_session_required
+
+        payload = {
+            'sub': sub, 'sid': sid,
+            'events': {BACK_CHANNEL_LOGOUT_EVENT: {}}
+        }
+
+        try:
+            alg = cinfo['id_token_signed_response_alg']
+        except KeyError:
+            alg = self.capabilities['id_token_signing_alg_values_supported'][0]
+
+        _jws = JWT(self.keyjar, iss=self.name, lifetime=86400, sign_alg=alg)
+        _jws.with_jti = True
+        sjwt = _jws.pack(payload=payload, recv=cinfo["client_id"])
+
+        return back_channel_logout_uri, sjwt
+
+    def logout_all_clients(self, sid, client_id):
+        _sdb = self.sdb
+
+        # Find all RPs this user has logged it from
+        uid = _sdb.get_uid_by_sid(sid)
+        _client_sid = {}
+        for usid in _sdb.get_sids_from_uid(uid):
+            _client_sid[_sdb[usid]['client_id']] = usid
+
+        # Front-/Backchannel logout ?
+        _cdb = self.cdb
+        _iss = self.name
+        bc_logouts = {}
+        fc_iframes = []
+        for _cid, _csid in _client_sid.items():
+            if 'backchannel_logout_uri' in _cdb[_cid]:
+                _sub = _sdb.get_sub_by_sid(_csid)
+                bc_logouts[_cid] = self.do_back_channel_logout(
+                    _cdb[_cid], _sub, _csid)
+            elif 'frontchannel_logout_uri' in _cdb[_cid]:
+                # Construct an IFrame
+                fc_iframes.append(do_front_channel_logout_iframe(_cdb[_cid],
+                                                                 _iss, _csid))
+
+        # take care of Back channel logout first
+        for _cid, spec in bc_logouts.items():
+            _url, sjwt = spec
+            logger.info('logging out from {} at {}'.format(_cid, _url))
+
+            res = self.httpc.http_request(
+                _url, 'POST', data="logout_token={}".format(sjwt))
+
+            if res.status_code < 300:
+                logger.info('Logged out from {}'.format(_cid))
+            elif res.status_code >= 400:
+                logger.info('failed to logout from {}'.format(_cid))
+
+        return fc_iframes
+
+    def logout_from_client(self, sid, client_id):
+        _cdb = self.cdb
+        _sso_db = self.sdb
+
+        if 'backchannel_logout_uri' in _cdb[client_id]:
+            _sub = _sso_db.get_sub_by_sid(sid)
+            _url, sjwt = self.do_back_channel_logout(_cdb[client_id], _sub, sid)
+            res = self.httpc.http_request(
+                _url, 'POST', data="logout_token={}".format(sjwt))
+
+            if res.status_code < 300:
+                logger.info('Logged out from {}'.format(client_id))
+            elif res.status_code >= 400:
+                logger.info('failed to logout from {}'.format(client_id))
+
+            return []
+        elif 'frontchannel_logout_uri' in _cdb[client_id]:
+            # Construct an IFrame
+            _iframe = do_front_channel_logout_iframe(
+                _cdb[client_id], self.name, sid)
+            return [_iframe]
+
+    def end_session_endpoint(self, request="", cookie=None, **kwargs):
+        """
+        This is where a RP initiated Logout starts
+
+        :param request: The logout request
+        :param cookie:
+        :param kwargs:
+        :return:
+        """
+        esr = EndSessionRequest().from_urlencoded(request)
+
+        logger.debug("End session request: {}", sanitize(esr.to_dict()))
+
+        # 2 ways of find out client ID and user. Either through a cookie
+        # or using the id_token_hint
+        try:
+            cookie_dealer, client_id, uid = self._get_uid_from_cookie(cookie)
+        except SubMismatch as error:
+            return error_response('invalid_request', '%s' % error)
+
+        if "id_token_hint" in esr:
+            id_token_hint = IdToken().from_jwt(esr["id_token_hint"],
+                                               keyjar=self.keyjar,
+                                               verify=True)
+            far_away = 86400 * 30  # 30 days
+
+            if client_id:
+                args = {'client_id': client_id}
+            else:
+                args = {}
+
+            try:
+                id_token_hint.verify(iss=self.baseurl, skew=far_away,
+                                     nonce_storage_time=far_away, **args)
+            except (VerificationError, NotForMe) as err:
+                logger.warning(
+                    'Verification error on id_token_hint: {}'.format(err))
+                return error_response('invalid_request', "Bad Id Token hint")
+
+            sub = id_token_hint["sub"]
+
+            if uid:
+                match = False
+                # verify that 'sub' are bound to 'uid'
+                if self.sdb.get_uid_by_sub(sub) != uid:
+                    return error_response('invalid_request', "Wrong user")
+            else:
+                try:
+                    uid = self.sdb.get_uid_by_sub(sub)
+                except IndexError:
+                    pass
+
+            if not client_id:
+                if len(id_token_hint['aud']) == 1:
+                    client_id = id_token_hint['aud'][0]
+                else:
+                    client_id = id_token_hint['azp']
+
+        if not client_id:
+            return error_response('invalid_request', "Could not find client ID")
+        if client_id not in self.cdb:
+            return error_response('invalid_request', "Unknown client")
+
+        redirect_uri = None
+        if "post_logout_redirect_uri" in esr:
+            redirect_uri = self.verify_post_logout_redirect_uri(esr, client_id)
+            if not redirect_uri:
+                msg = "Post logout redirect URI verification failed!"
+                return error_response('invalid_request', msg)
+        else:  # If only one registered use that one
+            if len(self.cdb[client_id]["post_logout_redirect_uris"]) == 1:
+                _base, _query = self.cdb[client_id]["post_logout_redirect_uris"][0]
+                if _query:
+                    query_string = urlencode(
+                        [(key, v) for key in _query for v in _query[key]])
+                    redirect_uri = "%s?%s" % (_base, query_string)
+                else:
+                    redirect_uri = _base
+
+        # redirect user to OP logout verification page
+        payload = {
+            'uid': uid, 'client_id': client_id,
+            'redirect_uri': redirect_uri
+        }
+
+        # From me to me
+        _jws = JWT(self.keyjar, iss=self.name, lifetime=86400,
+                   sign_alg=kwargs['signing_alg'])
+        sjwt = _jws.pack(payload=payload, recv=self.name)
+
+        return {'sjwt': sjwt}
+
+    def kill_session(self, sid, request, fc_iframes):
+        # Kill the session
+        _sdb = self.sdb
+        _sdb.revoke_session(sid=sid)
+
+        # redirect user
+        if 'post_logout_redirect_uri' in request:
+            _ruri = request["post_logout_redirect_uri"]
+            if 'state' in request:
+                _ruri = '{}?{}'.format(
+                    _ruri, urlencode({'state': request['state']}))
+        else:  # To  my own logout-done page
+            try:
+                _ruri = self.post_logout_page
+            except KeyError:
+                _ruri = self.name
+
+        return {
+            'logout_iframes': fc_iframes,
+            'response_args': _ruri
+        }
+
+
+def do_front_channel_logout_iframe(c_info, iss, sid):
+    """
+
+    :param c_info: Client info
+    :param iss: Issuer ID
+    :param sid: Session ID
+    :return: IFrame
+    """
+    frontchannel_logout_uri = c_info['frontchannel_logout_uri']
+    try:
+        flsr = c_info['frontchannel_logout_session_required']
+    except KeyError:
+        flsr = False
+
+    if flsr:
+        _query = urlencode({'iss': iss, 'sid': sid})
+        _iframe = '<iframe src="{}?{}">'.format(frontchannel_logout_uri,
+                                                _query)
+    else:
+        _iframe = '<iframe src="{}">'.format(frontchannel_logout_uri)
+
+    return _iframe
