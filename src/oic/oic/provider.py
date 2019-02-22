@@ -1911,7 +1911,7 @@ class Provider(AProvider):
             if len(kb) == 0:
                 self.keyjar.issuer_keys[""].remove(kb)
 
-    # LOGOUT related
+    # Below are LOGOUT related methods
 
     def verify_post_logout_redirect_uri(self, esreq, client_id):
         """
