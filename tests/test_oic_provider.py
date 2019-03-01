@@ -1,3 +1,4 @@
+import copy
 import datetime
 import json
 import logging
@@ -37,7 +38,7 @@ from oic.oic.message import RegistrationRequest
 from oic.oic.message import RegistrationResponse
 from oic.oic.message import TokenErrorResponse
 from oic.oic.message import UserInfoRequest
-from oic.oic.provider import InvalidRedirectURIError
+from oic.oic.provider import InvalidRedirectURIError, do_front_channel_logout_iframe
 from oic.oic.provider import InvalidSectorIdentifier
 from oic.oic.provider import Provider
 from oic.utils.authn.authn_context import AuthnBroker
@@ -105,6 +106,7 @@ KEYJAR = KeyJar()
 KEYJAR[CLIENT_ID] = [KC_SYM, KC_RSA]
 KEYJAR["number5"] = [KC_SYM2, KC_RSA]
 KEYJAR[""] = KC_RSA
+KEYJAR[SERVER_INFO['issuer']] = KC_RSA
 
 CDB = {
     "number5": {
@@ -187,9 +189,9 @@ USERINFO = UserInfo(USERDB)
 class TestProvider(object):
     @pytest.fixture(autouse=True)
     def create_provider(self, session_db_factory):
-        self.provider = Provider(SERVER_INFO["issuer"], session_db_factory(SERVER_INFO["issuer"]),
-                                 CDB,
-                                 AUTHN_BROKER, USERINFO,
+        self.provider = Provider(SERVER_INFO["issuer"],
+                                 session_db_factory(SERVER_INFO["issuer"]),
+                                 CDB, AUTHN_BROKER, USERINFO,
                                  AUTHZ, verify_client, SYMKEY, urlmap=URLMAP,
                                  keyjar=KEYJAR)
         self.provider.baseurl = self.provider.name
@@ -1472,10 +1474,15 @@ class TestProvider(object):
                 urlencode({"state": 'abcde'}),
                 cookie=cookie)
 
-        assert isinstance(resp, SeeOther)
-        assert 'state=abcde' in resp.message
-        assert self.provider.sdb.has_uid('username') is False
-        self._assert_cookies_expired(resp.headers)
+        # returns a signed JWT to be put in a verification web page shown to
+        # the user
+
+        jwt_info = self.provider.unpack_signed_jwt(resp['sjwt'])
+
+        assert jwt_info['payload']['state'] == 'abcde'
+        assert jwt_info['payload']['uid'] == 'username'
+        assert jwt_info['payload']['client_id'] == 'number5'
+        assert jwt_info['payload']['redirect_uri'] == 'https://example.com/post_logout'
 
     def test_end_session_endpoint_with_wrong_cookie(self):
         self._code_auth()
@@ -1490,23 +1497,35 @@ class TestProvider(object):
         assert _err['error'] == "invalid_request"
 
     def test_end_session_endpoint_with_cookie_wrong_user(self):
-        self._code_auth()
+        # Need cookie and ID Token to figure this out
+        id_token = self._auth_with_id_token()
+        assert self.provider.sdb.get_sids_by_sub(
+                id_token["sub"])  # verify we got valid session
+
+        id_token_hint = id_token.to_jwt(algorithm="none")
         cookie = self._create_cookie("diggins", "number5")
 
         resp = self.provider.end_session_endpoint(
-                urlencode({"state": 'abcde'}),
+                urlencode({"id_token_hint": id_token_hint}),
                 cookie=cookie)
 
         assert isinstance(resp, Response)
         _err = ErrorResponse().from_json(resp.message)
         assert _err['error'] == "invalid_request"
+        assert _err['error_description'] == 'Wrong user'
 
     def test_end_session_endpoint_with_cookie_wrong_client(self):
-        self._code_auth()
+        # Need cookie and ID Token to figure this out
+        id_token = self._auth_with_id_token()
+        assert self.provider.sdb.get_sids_by_sub(
+                id_token["sub"])  # verify we got valid session
+
+        id_token_hint = id_token.to_jwt(algorithm="none")
+        # Wrong client_id
         cookie = self._create_cookie("username", "a1b2c3")
 
         resp = self.provider.end_session_endpoint(
-                urlencode({"state": 'abcde'}),
+                urlencode({"id_token_hint": id_token_hint}),
                 cookie=cookie)
 
         assert isinstance(resp, Response)
@@ -1522,10 +1541,12 @@ class TestProvider(object):
                 urlencode({"state": 'abcde'}),
                 cookie=cookie)
 
-        assert isinstance(resp, SeeOther)
-        assert 'state=abcde' in resp.message
-        assert not self.provider.sdb.has_uid('username')
-        self._assert_cookies_expired(resp.headers)
+        jwt_info = self.provider.unpack_signed_jwt(resp['sjwt'])
+
+        assert jwt_info['payload']['state'] == 'abcde'
+        assert jwt_info['payload']['uid'] == 'username'
+        assert jwt_info['payload']['client_id'] == 'client0'
+        assert jwt_info['payload']['redirect_uri'] == 'https://www.example.org/post_logout'
 
     def test_end_session_endpoint_with_cookie_dual_login_wrong_client(self):
         self._code_auth()
@@ -1550,11 +1571,11 @@ class TestProvider(object):
         resp = self.provider.end_session_endpoint(
                 urlencode({"id_token_hint": id_token_hint}))
 
-        assert isinstance(resp, SeeOther)
+        jwt_info = self.provider.unpack_signed_jwt(resp['sjwt'])
 
-        assert not self.provider.sdb.get_sids_by_sub(
-                id_token["sub"])  # verify session has been removed
-        self._assert_cookies_expired(resp.headers)
+        assert jwt_info['payload']['uid'] == 'username'
+        assert jwt_info['payload']['client_id'] == 'number5'
+        assert jwt_info['payload']['redirect_uri'] == 'https://example.com/post_logout'
 
     def test_end_session_endpoint_with_id_token_hint_and_cookie(self):
         id_token = self._auth_with_id_token()
@@ -1568,11 +1589,11 @@ class TestProvider(object):
                 urlencode({"id_token_hint": id_token_hint}),
                 cookie=cookie)
 
-        assert isinstance(resp, SeeOther)
+        jwt_info = self.provider.unpack_signed_jwt(resp['sjwt'])
 
-        assert not self.provider.sdb.get_sids_by_sub(
-                id_token["sub"])  # verify session has been removed
-        self._assert_cookies_expired(resp.headers)
+        assert jwt_info['payload']['uid'] == 'username'
+        assert jwt_info['payload']['client_id'] == 'number5'
+        assert jwt_info['payload']['redirect_uri'] == 'https://example.com/post_logout'
 
     def test_end_session_endpoint_with_post_logout_redirect_uri(self):
         self._code_auth()
@@ -1586,9 +1607,13 @@ class TestProvider(object):
                 {"post_logout_redirect_uri": post_logout_redirect_uri,
                  "state": 'abcde'}),
                 cookie=cookie)
-        assert isinstance(resp, SeeOther)
-        assert not self.provider.sdb.has_uid('username')
-        self._assert_cookies_expired(resp.headers)
+
+        jwt_info = self.provider.unpack_signed_jwt(resp['sjwt'])
+
+        assert jwt_info['payload']['state'] == 'abcde'
+        assert jwt_info['payload']['uid'] == 'username'
+        assert jwt_info['payload']['client_id'] == 'number5'
+        assert jwt_info['payload']['redirect_uri'] == 'https://example.com/post_logout'
 
     def test_end_session_endpoint_with_wrong_post_logout_redirect_uri(self):
         self._code_auth()
@@ -1601,6 +1626,7 @@ class TestProvider(object):
                 {"post_logout_redirect_uri": post_logout_redirect_uri,
                  "state": 'abcde'}),
                 cookie=cookie)
+
         assert isinstance(resp, Response)
         _err = ErrorResponse().from_json(resp.message)
         assert _err['error'] == "invalid_request"
@@ -1766,3 +1792,109 @@ class TestProvider(object):
         assert resp.status_code == 400
         msg = json.loads(resp.message)
         assert msg["error"] == "invalid_request_uri"
+
+    def test_back_channel_logout_no_uri(self):
+        self._code_auth()
+
+        res = self.provider.do_back_channel_logout(
+            self.provider.cdb[CLIENT_ID], 'username', 0)
+        assert res is None
+
+    def test_back_channel_logout(self):
+        self._code_auth()
+
+        _cdb = copy.copy(self.provider.cdb[CLIENT_ID])
+        _cdb['backchannel_logout_uri'] = 'https://example.com/bc_logout'
+        _cdb['client_id'] = CLIENT_ID
+        res = self.provider.do_back_channel_logout(_cdb, 'username', '_sid_')
+        assert isinstance(res, tuple)
+        assert res[0] == 'https://example.com/bc_logout'
+        _jwt = self.provider.unpack_signed_jwt(res[1])
+        assert _jwt
+        assert _jwt['iss'] == SERVER_INFO['issuer']
+        assert _jwt['aud'] == [CLIENT_ID]
+        assert _jwt['sub'] == 'username'
+        assert _jwt['sid'] == '_sid_'
+
+    def test_front_channel_logout(self):
+        self._code_auth()
+
+        _cdb = copy.copy(self.provider.cdb[CLIENT_ID])
+        _cdb['frontchannel_logout_uri'] = 'https://example.com/fc_logout'
+        _cdb['client_id'] = CLIENT_ID
+        res = do_front_channel_logout_iframe(_cdb, SERVER_INFO['issuer'],
+                                             '_sid_')
+        assert res == '<iframe src="https://example.com/fc_logout">'
+
+    def test_front_channel_logout_session_required(self):
+        self._code_auth()
+
+        _cdb = copy.copy(self.provider.cdb[CLIENT_ID])
+        _cdb['frontchannel_logout_uri'] = 'https://example.com/fc_logout'
+        _cdb['frontchannel_logout_session_required'] = True
+        _cdb['client_id'] = CLIENT_ID
+        res = do_front_channel_logout_iframe(_cdb, SERVER_INFO['issuer'],
+                                             '_sid_')
+        assert res == '<iframe src="https://example.com/fc_logout?iss=https%3A%2F%2Fconnect-op.heroku.com&sid=_sid_">'
+
+    def test_logout_from_client_bc(self):
+        self._code_auth()
+        self.provider.cdb[CLIENT_ID]['backchannel_logout_uri'] = 'https://example.com/bc_logout'
+        self.provider.cdb[CLIENT_ID]['client_id'] = CLIENT_ID
+        _sid = list(self.provider.sdb._db.keys())[0]
+        res = self.provider.logout_from_client(_sid, CLIENT_ID)
+        assert set(res.keys()) == {'blu'}
+        assert set(res['blu'].keys()) == {CLIENT_ID}
+        _spec = res['blu'][CLIENT_ID]
+        assert _spec[0] == 'https://example.com/bc_logout'
+        _jwt = self.provider.unpack_signed_jwt(_spec[1])
+        assert _jwt
+        assert _jwt['iss'] == SERVER_INFO['issuer']
+        assert _jwt['aud'] == [CLIENT_ID]
+        assert _jwt['sid'] == _sid
+
+        with pytest.raises(KeyError):
+            _ = self.provider.sdb[_sid]
+
+    def test_logout_from_client_fc(self):
+        self._code_auth()
+        del self.provider.cdb[CLIENT_ID]['backchannel_logout_uri']
+        self.provider.cdb[CLIENT_ID]['frontchannel_logout_uri'] = 'https://example.com/fc_logout'
+        self.provider.cdb[CLIENT_ID]['client_id'] = CLIENT_ID
+        _sid = list(self.provider.sdb._db.keys())[0]
+        res = self.provider.logout_from_client(_sid, CLIENT_ID)
+        assert set(res.keys()) == {'flu'}
+        assert set(res['flu'].keys()) == {CLIENT_ID}
+        _spec = res['flu'][CLIENT_ID]
+        assert _spec == '<iframe src="https://example.com/fc_logout">'
+
+        with pytest.raises(KeyError):
+            _ = self.provider.sdb[_sid]
+
+    def test_logout_from_client(self):
+        self._code_auth()
+        self._code_auth2()
+
+        # client0
+        self.provider.cdb['client0']['backchannel_logout_uri'] = 'https://example.com/bc_logout'
+        self.provider.cdb['client0']['client_id'] = 'client0'
+        self.provider.cdb['number5']['frontchannel_logout_uri'] = 'https://example.com/fc_logout'
+        self.provider.cdb['number5']['client_id'] = CLIENT_ID
+
+        _sid = list(self.provider.sdb._db.keys())[0]
+        res = self.provider.logout_all_clients(_sid, CLIENT_ID)
+        assert res
+        assert set(res.keys()) == {'blu', 'flu'}
+        assert set(res['flu'].keys()) == {'number5'}
+        _spec = res['flu']['number5']
+        assert _spec == '<iframe src="https://example.com/fc_logout">'
+        assert set(res['blu'].keys()) == {'client0'}
+        _spec = res['blu']['client0']
+        assert _spec[0] == 'https://example.com/bc_logout'
+        _jwt = self.provider.unpack_signed_jwt(_spec[1])
+        assert _jwt
+        assert _jwt['iss'] == SERVER_INFO['issuer']
+        assert _jwt['aud'] == ['client0']
+
+        with pytest.raises(KeyError):
+            _ = self.provider.sdb[_sid]

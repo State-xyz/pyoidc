@@ -347,7 +347,6 @@ class Consumer(Client):
             # May have token and id_token information too
             if "access_token" in aresp:
                 atr = clean_response(aresp)
-                self.access_token = atr
                 # update the grant object
                 self.get_grant(state=_state).add_token(atr)
             else:
@@ -361,7 +360,7 @@ class Consumer(Client):
                 idt = None
             else:
                 try:
-                    self.sdb[_state].store_smid2state(idt['sid'], _state)
+                    self.smid2state[idt['sid']] = _state
                 except KeyError:
                     pass
 
@@ -497,7 +496,7 @@ class Consumer(Client):
             except KeyError:
                 raise MessageException('Neither "sid" nor "sub"')
             else:
-                _sid = self.sdb.get_sid_by_smid(sm_id)
+                _sid = self.smid2state[sm_id]
         else:
             _sid = self.sdb.get_sid_by_sub_and_client_id(sub, self.client_id)
 

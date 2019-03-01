@@ -172,6 +172,7 @@ class Client(PBase):
 
         self.grant = {}
         self.state2nonce = {}
+        self.smid2state = {}
         # own endpoint
         self.redirect_uris = [None]
 

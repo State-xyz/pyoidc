@@ -933,6 +933,9 @@ class SessionDB(object):
         except KeyError:
             return None
 
+    def get_uid_by_sid(self, sid):
+        return self.get_uid_by_sub(self._db[sid]['sub'])
+
     def has_uid(self, uid):
         return uid in self._map['uid2sub']
 
@@ -977,8 +980,9 @@ class SessionDB(object):
         :return: A session management ID
         """
 
-        return hashlib.sha256(
+        smid = hashlib.sha256(
             "{}{}".format(sid, self.sm_salt).encode("utf-8")).hexdigest()
+        self._map['smid2sid'][smid] = sid
 
     def get_sid_by_smid(self, smid):
         """
