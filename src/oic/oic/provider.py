@@ -215,7 +215,7 @@ class Provider(AProvider):
                  jwks_uri='', jwks_name='', baseurl=None, client_cert=None,
                  extra_claims=None, template_renderer=render_template,
                  extra_scope_dict=None, post_logout_page='',
-                 self_signing_alg='RS256'):
+                 self_signing_alg='RS256', logout_path=''):
 
         AProvider.__init__(self, name, sdb, cdb, authn_broker, authz,
                            client_authn, symkey, urlmap,
@@ -281,6 +281,8 @@ class Provider(AProvider):
         self.httpc = PBase(verify_ssl=verify_ssl, keyjar=self.keyjar)
         self.post_logout_page = post_logout_page
         self.signing_alg = self_signing_alg
+        self.logout_path = logout_path
+        self.logout_verify_url = ''
 
     def build_jwx_def(self):
         self.jwx_def = {}
@@ -2101,6 +2103,8 @@ class Provider(AProvider):
         except SubMismatch as error:
             return error_response('invalid_request', '%s' % error)
 
+        sid = ''
+
         if "id_token_hint" in esr:
             id_token_hint = IdToken().from_jwt(esr["id_token_hint"],
                                                keyjar=self.keyjar,
@@ -2139,6 +2143,11 @@ class Provider(AProvider):
                 else:
                     client_id = id_token_hint['azp']
 
+            sids = self.sdb.get_sids_by_sub(sub)
+            for sid in sids:
+                if self.sdb[sid]['client_id'] == client_id:
+                    break
+
         if not client_id:
             return error_response('invalid_request', "Could not find client ID")
         if client_id not in self.cdb:
@@ -2169,7 +2178,7 @@ class Provider(AProvider):
         # redirect user to OP logout verification page
         payload = {
             'uid': uid, 'client_id': client_id,
-            'redirect_uri': redirect_uri
+            'redirect_uri': redirect_uri, 'sid': sid
         }
         if 'state' in esr:
             payload['state'] = esr['state']
@@ -2179,7 +2188,9 @@ class Provider(AProvider):
                    sign_alg=self.signing_alg)
         sjwt = _jws.pack(aud=[self.name], **payload)
 
-        return {'sjwt': sjwt}
+        location = '{}?{}'.format(self.logout_verify_url,
+                                  urlencode({'sjwt': sjwt}))
+        return SeeOther(location)
 
     def unpack_signed_jwt(self, sjwt):
         verifier = JWT(self.keyjar)

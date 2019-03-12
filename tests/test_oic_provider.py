@@ -38,9 +38,10 @@ from oic.oic.message import RegistrationRequest
 from oic.oic.message import RegistrationResponse
 from oic.oic.message import TokenErrorResponse
 from oic.oic.message import UserInfoRequest
-from oic.oic.provider import InvalidRedirectURIError, do_front_channel_logout_iframe
+from oic.oic.provider import InvalidRedirectURIError
 from oic.oic.provider import InvalidSectorIdentifier
 from oic.oic.provider import Provider
+from oic.oic.provider import do_front_channel_logout_iframe
 from oic.utils.authn.authn_context import AuthnBroker
 from oic.utils.authn.client import ClientSecretBasic
 from oic.utils.authn.client import verify_client
@@ -48,7 +49,6 @@ from oic.utils.authn.user import UserAuthnMethod
 from oic.utils.authz import AuthzHandling
 from oic.utils.http_util import CookieDealer
 from oic.utils.http_util import Response
-from oic.utils.http_util import SeeOther
 from oic.utils.keyio import KeyBundle
 from oic.utils.keyio import KeyJar
 from oic.utils.keyio import ec_init
