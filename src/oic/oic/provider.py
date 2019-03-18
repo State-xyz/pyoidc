@@ -677,7 +677,7 @@ class Provider(AProvider):
         aresp['client_id'] = areq['client_id']
 
         if self.events:
-            self.events.store('Protocol response', aresp)
+            self.events.store('protocol response', aresp)
 
         response = sanitize(aresp.to_dict())
         logger.info("authorization response: %s", response)
@@ -1683,7 +1683,7 @@ class Provider(AProvider):
             msg = "provider_info_response: {}"
             _log_info(msg.format(sanitize(_response.to_dict())))
             if self.events:
-                self.events.store('Protocol response', _response)
+                self.events.store('protocol response', _response)
 
             headers = [("Cache-Control", "no-store"), ("x-ffo", "bar")]
             if handle:
@@ -2096,6 +2096,9 @@ class Provider(AProvider):
 
         logger.debug("End session request: {}", sanitize(esr.to_dict()))
 
+        if self.events:
+            self.events.store('protocol request', esr)
+
         # 2 ways of find out client ID and user. Either through a cookie
         # or using the id_token_hint
         try:
@@ -2183,6 +2186,9 @@ class Provider(AProvider):
         if 'state' in esr:
             payload['state'] = esr['state']
 
+        if self.events:
+            self.events.store('object args', '{}'.format(payload))
+
         # From me to me
         _jws = JWT(self.keyjar, iss=self.name, lifetime=86400,
                    sign_alg=self.signing_alg)
@@ -2196,14 +2202,17 @@ class Provider(AProvider):
         verifier = JWT(self.keyjar)
         try:
             return verifier.unpack(sjwt)
-        except Exception:
-            raise ValueError('Not a signed JWT')
+        except Exception as err:
+            raise ValueError(err)
 
     def do_verified_logout(self, sid, client_id, alla=False, **kwargs):
         if alla:
             logout_spec = self.logout_all_clients(sid=sid, client_id=client_id)
         else:
             logout_spec = self.logout_from_client(sid=sid, client_id=client_id)
+
+        if self.events:
+            self.events.store('object args', '{}'.format(logout_spec))
 
         # take care of Back channel logout first
         for _cid, spec in logout_spec['blu'].items():
