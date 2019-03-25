@@ -37,10 +37,10 @@ from oic.exception import NotForMe
 from oic.exception import ParameterError
 from oic.exception import SubMismatch
 from oic.exception import UnSupported
+from oic.oauth2 import PBase
 from oic.oauth2 import compact
 from oic.oauth2 import error_response
 from oic.oauth2 import redirect_authz_error
-from oic.oauth2 import PBase
 from oic.oauth2.exception import CapabilitiesMisMatch
 from oic.oauth2.exception import VerificationError
 from oic.oauth2.message import Message
@@ -73,10 +73,10 @@ from oic.oic.message import RegistrationResponse
 from oic.oic.message import SCOPE2CLAIMS
 from oic.oic.message import TokenErrorResponse
 from oic.utils import sort_sign_alg
-from oic.utils.http_util import OAUTH2_NOCACHE_HEADERS
 from oic.utils.http_util import BadRequest
 from oic.utils.http_util import CookieDealer
 from oic.utils.http_util import Created
+from oic.utils.http_util import OAUTH2_NOCACHE_HEADERS
 from oic.utils.http_util import Response
 from oic.utils.http_util import SeeOther
 from oic.utils.http_util import Unauthorized
@@ -2230,7 +2230,14 @@ class Provider(AProvider):
         for _cid in logout_spec['flu'].keys():
             logger.info('Adding logout iframe for {}'.format(_cid))
 
-        return logout_spec['flu'].values()
+        # kill cookies
+        kaka1 = self.write_session_cookie('removed', 60)
+        kaka2 = self.cookie_func('', typ="sso",
+                                 cookie_name=self.sso_cookie_name,
+                                 kill=True)
+
+        return {'iframe': logout_spec['flu'].values(),
+                'cookie': [kaka1, kaka2]}
 
 
 def do_front_channel_logout_iframe(c_info, iss, sid):
