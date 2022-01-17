@@ -62,9 +62,9 @@ NAME = "pyoic"
 OAS = None
 
 PASSWD = {
-    "diana": "krall",
-    "babs": "howes",
-    "upper": "crust"
+    "phuong": "phuong",
+    "acc1": "acc1",
+    "acc2": "acc2"
 }
 
 JWKS_FILE_NAME = "static/jwks.json"

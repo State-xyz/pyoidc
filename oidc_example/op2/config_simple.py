@@ -27,44 +27,54 @@ CERT_CHAIN = None
 USERINFO = "SIMPLE"
 
 USERDB = {
-    "diana": {
-        "sub": "dikr0001",
-        "name": "Diana Krall",
-        "given_name": "Diana",
-        "family_name": "Krall",
-        "nickname": "Dina",
-        "email": "diana@example.org",
+    "phuong": {
+        "sub": "phuong0001",
+        "name": "Phuong Dao",
+        "given_name": "Phuong",
+        "family_name": "Dao",
+        "nickname": "Phuong",
+        "email": "phuong@gmail.com",
         "email_verified": False,
         "phone_number": "+46 90 7865000",
+        "MSSV": "20182018",
         "address": {
-            "street_address": "Umeå Universitet",
-            "locality": "Umeå",
+            "street_address": "Hust",
+            "locality": "Bach Khoa",
             "postal_code": "SE-90187",
-            "country": "Sweden"
+            "country": "Viet Nam"
         },
     },
-    "babs": {
-        "sub": "babs0001",
-        "name": "Barbara J Jensen",
-        "given_name": "Barbara",
-        "family_name": "Jensen",
-        "nickname": "babs",
-        "email": "babs@example.com",
+    "acc1": {
+        "sub": "acc10001",
+        "name": "acc1 Account",
+        "given_name": "acc1",
+        "family_name": "Account",
+        "nickname": "acc1",
+        "email": "acc1@gmail.com",
         "email_verified": True,
+        "MSSV": "20192019",
         "address": {
-            "street_address": "100 Universal City Plaza",
-            "locality": "Hollywood",
-            "region": "CA",
+            "street_address": "40 Ta Quang Buu",
+            "locality": "Ta Quang Buu",
+            "region": "HN",
             "postal_code": "91608",
-            "country": "USA",
+            "country": "Viet Nam",
         },
     },
-    "upper": {
-        "sub": "uppe0001",
-        "name": "Upper Crust",
-        "given_name": "Upper",
-        "family_name": "Crust",
-        "email": "uc@example.com",
+    "acc2": {
+        "sub": "acc20001",
+        "name": "acc2 Account",
+        "given_name": "acc2",
+        "family_name": "Account",
+        "email": "acc2@gmail.com",
         "email_verified": True,
+        "MSSV": "20202020",
+        "address": {
+            "street_address": "Ta Quang Buu",
+            "locality": "Ta Quang Buu",
+            "region": "HN",
+            "postal_code": "91608",
+            "country": "Viet Nam",
+        },
     }
 }

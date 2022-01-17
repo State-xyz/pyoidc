@@ -14,6 +14,7 @@ except ImportError:
 else:
 
     class SAML2AuthnMethod(ClientAuthnMethod):
+
         """Authenticating clients using the SAML2 assertion profile."""
 
         def construct(self, cis, assertion=None, **kwargs):
